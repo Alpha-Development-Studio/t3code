@@ -95,6 +95,17 @@ Claude skills come from the config directory's `skills` folder and the project's
 `.claude/skills` folder. If both define the same name, the config-directory copy
 wins. Skills disabled in Claude's settings do not appear in the composer.
 
+To reuse the project's shared `.agents/skills` catalog, start the T3 Code server with
+`T3_SYNC_PROJECT_SKILLS=1`. T3 Code copies those skills into `.claude/skills` before a
+session opens. An existing skill in `.claude/skills` with the same name is kept as a
+conflict and never overwritten; copies T3 Code created are tracked in
+`.claude/skills/.t3-managed.json` and updated when the shared skill changes. A
+conflicting copy, whether it was already yours or you edited a tracked copy, is
+preserved, reported in the server log and in the provider's status under Settings →
+Providers, and never overwritten or removed. Removing a shared skill removes its old tracked copy on the next sync, and a
+renamed skill is copied under its new name. See
+[shared project skills](./composer.md#shared-project-skills).
+
 Use `$` in the composer to select a skill. Enabled installed Claude plugins,
 and plugins synced from your claude.ai account, also contribute skills under
 names such as `plugin:review`. Skills marked `disable-model-invocation` can

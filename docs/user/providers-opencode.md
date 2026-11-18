@@ -91,3 +91,15 @@ opens there.
 
 Existing threads keep their selected model and options even when it disappears
 from the catalog. If OpenCode rejects that model, select an available one and retry.
+
+## Shared project skills
+
+OpenCode reads project skills from `.agents/skills` itself. With
+`T3_SYNC_PROJECT_SKILLS=1`, T3 Code also copies that catalog into `.opencode/skills`
+before a session opens. A skill already present in `.opencode/skills` with the same name
+is a conflict: your copy is kept and never overwritten. Copies T3 Code created are
+tracked in `.opencode/skills/.t3-managed.json`, updated when the shared skill changes,
+and removed when the shared skill is removed or renamed. A conflicting copy, whether it
+was already yours or you edited a tracked copy, is preserved, reported in the server log
+and in the provider's status under Settings → Providers, and never overwritten or removed. See
+[shared project skills](./composer.md#shared-project-skills).

@@ -2,6 +2,7 @@ import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  getProviderSkillSyncSummary,
   getProviderSummary,
   getProviderVersionAdvisoryPresentation,
   getProviderStatusKey,
@@ -47,6 +48,23 @@ describe("getProviderSummary", () => {
       headline: "Not authenticated",
       detail: "Run codex login.",
     });
+  });
+});
+
+describe("getProviderSkillSyncSummary", () => {
+  it("counts edited and user-owned preserved copies across workspaces", () => {
+    const issues = [
+      { cwd: "/project-a", target: "/project-a/.claude/skills", conflicts: ["review", "deploy"] },
+      { cwd: "/project-b", target: "/project-b/.opencode/skills", conflicts: ["test"] },
+    ] as const;
+    expect(getProviderSkillSyncSummary({ ...provider, skillSyncIssues: issues })).toEqual({
+      issues,
+      conflictCount: 3,
+    });
+  });
+
+  it("is empty when no sync conflicts were reported", () => {
+    expect(getProviderSkillSyncSummary(provider)).toEqual({ issues: [], conflictCount: 0 });
   });
 });
 

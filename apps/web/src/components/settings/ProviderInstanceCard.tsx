@@ -81,6 +81,7 @@ import { getProviderRestartNotice } from "../ProviderUpdateLaunchNotification.lo
 import {
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
+  getProviderSkillSyncSummary,
   getProviderStatusKey,
   getProviderSummary,
   getProviderVersionLabel,
@@ -818,6 +819,7 @@ export function ProviderInstanceCard({
   const summary = enabled
     ? getProviderSummary(effectiveProvider, m)
     : { headline: gt("Disabled", { $context: "provider status" }), detail: null };
+  const skillSync = getProviderSkillSyncSummary(enabled ? liveProvider : undefined);
   const authEmail = liveProvider?.auth.email?.trim();
   const isAuthenticated = enabled && liveProvider?.auth.status === "authenticated";
   const authLabel =
@@ -1224,6 +1226,16 @@ export function ProviderInstanceCard({
                 </span>
               </ProviderStatusDiagnostic>
             </span>
+            {skillSync.conflictCount > 0 ? (
+              <span className="mt-1 flex items-start gap-1.5 text-xs leading-normal text-warning">
+                <AlertTriangleIcon aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+                <span>
+                  {gt("{count} conflicting skill copies left untouched", {
+                    count: skillSync.conflictCount,
+                  })}
+                </span>
+              </span>
+            ) : null}
           </span>
         </div>
         <span className="pointer-events-none relative flex h-5 shrink-0 items-center gap-1 *:pointer-events-auto">
@@ -1302,6 +1314,23 @@ export function ProviderInstanceCard({
         <p aria-live="polite" className="text-xs leading-snug [overflow-wrap:anywhere]">
           {restartNotice}
         </p>
+      ) : null}
+      {skillSync.issues.length > 0 ? (
+        <div className="grid gap-1 text-xs leading-snug" role="status">
+          <p className="font-medium text-warning">
+            <T>Conflicting skill copies were left untouched</T>
+          </p>
+          {skillSync.issues.map((issue) => (
+            <p key={issue.cwd} className="text-muted-foreground [overflow-wrap:anywhere]">
+              <span className="text-foreground">{issue.conflicts.join(", ")}</span>
+              {" · "}
+              <code>{issue.target}</code>
+            </p>
+          ))}
+          <p className="text-muted-foreground">
+            <T>Delete a copy to let the next sync recreate it from the shared skill.</T>
+          </p>
+        </div>
       ) : null}
       {urlAuthAction && onAcceptUrlAuth ? (
         <div className="grid max-w-xl gap-1.5 pt-1 text-xs">

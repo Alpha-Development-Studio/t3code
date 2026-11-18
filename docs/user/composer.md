@@ -290,6 +290,33 @@ and your next message starts the agent again with the new setup.
 Provider commands must start the message to run. T3 Code commands such as
 `/model` and skill mentions work on any line.
 
+### Shared project skills
+
+Put a skill once in `.agents/skills/<name>/SKILL.md` and every provider lists it in the
+`$` menu. T3 Code merges that folder into each provider's catalog, and a project skill
+with the same name replaces the provider's copy.
+
+Some providers read skills from their own project folder instead. Start the T3 Code
+server with `T3_SYNC_PROJECT_SKILLS=1` to copy the shared catalog into those folders
+before an agent session starts and when a workspace snapshot refreshes:
+
+- Claude: `.claude/skills`
+- OpenCode: `.opencode/skills`
+
+Antigravity, Cursor, fx, and Pi already read `.agents/skills` themselves, and Codex has
+no project skill folder, so nothing is copied for those providers.
+
+The copy is opt-in and only fills in missing skills. T3 Code never overwrites a copy it
+did not create. If the provider's folder already has a skill with the same name, or you
+edit a skill T3 Code copied, T3 Code preserves that copy as a conflict, reports it in
+the server log and in the provider's status under Settings → Providers, and never
+overwrites or removes it. Copies T3 Code created are tracked in `.t3-managed.json` with a
+content digest, so later syncs update only untouched copies and never delete a skill you
+added. Delete a conflicting copy to let the next sync recreate it from the shared skill.
+If you remove or rename a shared skill, its old tracked copy is removed on the next sync;
+a renamed skill is copied under its new name. When a copy exists, the provider's own skill invocation runs it, so the
+skill behaves the same inside and outside T3 Code.
+
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it.
 

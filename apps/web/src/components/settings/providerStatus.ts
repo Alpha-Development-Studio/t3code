@@ -126,6 +126,17 @@ export function getProviderSummary(
   };
 }
 
+export function getProviderSkillSyncSummary(provider: ServerProvider | undefined): {
+  readonly issues: NonNullable<ServerProvider["skillSyncIssues"]>;
+  readonly conflictCount: number;
+} {
+  const issues = provider?.skillSyncIssues ?? [];
+  return {
+    issues,
+    conflictCount: issues.reduce((total, issue) => total + issue.conflicts.length, 0),
+  };
+}
+
 export function getProviderVersionLabel(version: string | null | undefined) {
   if (!version) return null;
   const antigravity = /^agy_acp_server_(\d{4})(\d{2})(\d{2})_\d+(?:_(\w+))?$/.exec(version);
