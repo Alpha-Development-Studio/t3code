@@ -259,6 +259,8 @@ const CODEX_CLIENT_CAPABILITIES = {
 } as const;
 
 export const CodexProviderCapabilitiesV2 = {
+  // Codex has no native project skill folder, so T3 expands `.agents/skills` mentions.
+  skills: { loadsProjectSkills: false },
   sessions: {
     supportsMultipleProviderThreadsPerSession: true,
     supportsModelSwitchInSession: true,

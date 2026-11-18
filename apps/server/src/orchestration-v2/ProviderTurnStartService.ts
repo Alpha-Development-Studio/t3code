@@ -37,7 +37,10 @@ import {
 import { withTurnStartReservation, withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import { discoverProjectSkills, planSkillMentions } from "../skills/SkillCatalog.ts";
+import { materializedProjectSkillNames, syncProjectSkills } from "../skills/ProjectSkillSync.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { makeRestoreMissingWorktree } from "../workspace/restoreMissingWorktree.ts";
 import * as EventSink from "./EventSink.ts";
@@ -842,6 +845,47 @@ export const layer: Layer.Layer<
         run,
         checkpointScope,
       });
+      // The provider's native loader scans its own skill folder when the session opens, so the
+      // shared catalog has to be materialized before that, not only on the next snapshot scan.
+      const skillCwd = projection.thread.worktreePath ?? resolvedRuntimePolicy.cwd;
+      if (skillCwd !== null && skillCwd !== undefined) {
+        const skillSync = yield* syncProjectSkills({
+          cwd: skillCwd,
+          driver: providerThread.driver,
+          environment: process.env,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Project skill sync failed.", {
+              cwd: skillCwd,
+              driver: providerThread.driver,
+              cause,
+            }).pipe(Effect.as(undefined)),
+          ),
+        );
+        // The scan may be older than this session start, so publish the fresh result too.
+        if (skillSync !== undefined) {
+          const providerRegistry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
+          if (Option.isSome(providerRegistry)) {
+            yield* providerRegistry.value
+              .recordProjectSkillSync({
+                instanceId: run.providerInstanceId,
+                cwd: skillCwd,
+                report: skillSync,
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Failed to record project skill sync status.", {
+                    cwd: skillCwd,
+                    instanceId: run.providerInstanceId,
+                    cause,
+                  }),
+                ),
+              );
+          }
+        }
+      }
       const sessionResult = yield* Effect.result(
         providerSessions.open({
           threadId: projection.thread.id,
@@ -893,10 +937,39 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const userText = projectComposerContextForProvider({
+      const providerText = projectComposerContextForProvider({
         text: providerMessage.text,
         records: providerMessage.context?.records ?? [],
       });
+      // Project skills live in one provider-neutral folder, so a `$name` mention is spelled out
+      // here only when the provider declares it cannot load that folder itself. An undeclared
+      // provider is assumed native, so its own expansion is never pre-empted.
+      const providerLoadsProjectSkills =
+        session.providerSession.capabilities.skills?.loadsProjectSkills !== false;
+      const projectSkills =
+        skillCwd === null || skillCwd === undefined
+          ? []
+          : yield* discoverProjectSkills(skillCwd).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            );
+      // A synced copy lives in the provider's own folder, so its native dispatch can turn the
+      // mention into the provider's invocation. T3 must not inline the body again.
+      const materializedSkillNames =
+        skillCwd === null || skillCwd === undefined || providerLoadsProjectSkills
+          ? new Set<string>()
+          : yield* materializedProjectSkillNames({ cwd: skillCwd, driver: session.driver }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            );
+      const userText =
+        projectSkills.length === 0 || providerLoadsProjectSkills
+          ? providerText
+          : yield* planSkillMentions(
+              providerText,
+              projectSkills,
+              materializedSkillNames.size === 0 ? {} : { nativeSkillNames: materializedSkillNames },
+            ).pipe(Effect.provideService(FileSystem.FileSystem, fileSystem));
       // Native goal commands go verbatim; handoff history waits a turn.
       const goalDriver =
         session.driver === "codex" ||

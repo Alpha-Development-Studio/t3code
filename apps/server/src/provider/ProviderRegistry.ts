@@ -33,6 +33,8 @@ import { applyProviderCompatibility } from "./providerCompatibility.ts";
 import * as ServerConfig from "../config.ts";
 import { refreshWindowsPath } from "../os-jank.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
+import { discoverProjectSkills, mergeSkillCatalog } from "../skills/SkillCatalog.ts";
+import { syncProjectSkills, type ProjectSkillSyncReport } from "../skills/ProjectSkillSync.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import {
   hydrateCachedProvider,
@@ -59,6 +61,13 @@ export class ProviderRegistry extends Context.Service<
   ProviderRegistry,
   {
     readonly getProviders: Effect.Effect<ReadonlyArray<ServerProvider>>;
+
+    /** Record a materialization result found before a provider session opens. */
+    readonly recordProjectSkillSync: (input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly cwd: string;
+      readonly report: Pick<ProjectSkillSyncReport, "target" | "conflicts">;
+    }) => Effect.Effect<void>;
 
     readonly refresh: (
       provider?: ProviderDriverKind,
@@ -154,18 +163,44 @@ const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean 
 const MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER = 16;
 
 function dropProviderWorkspaceSnapshot(provider: ServerProvider, cwd: string): ServerProvider {
-  return provider.workspaceSnapshots?.some((snapshot) => snapshot.cwd === cwd)
-    ? {
-        ...provider,
-        workspaceSnapshots: provider.workspaceSnapshots.filter((snapshot) => snapshot.cwd !== cwd),
-      }
-    : provider;
+  const hasSnapshot = provider.workspaceSnapshots?.some((snapshot) => snapshot.cwd === cwd);
+  const hasSkillSyncIssue = provider.skillSyncIssues?.some((issue) => issue.cwd === cwd);
+  if (!hasSnapshot && !hasSkillSyncIssue) return provider;
+  const workspaceSnapshots = provider.workspaceSnapshots?.filter(
+    (snapshot) => snapshot.cwd !== cwd,
+  );
+  const skillSyncIssues = provider.skillSyncIssues?.filter((issue) => issue.cwd !== cwd);
+  const { skillSyncIssues: _previousSkillSyncIssues, ...providerBase } = provider;
+  return {
+    ...providerBase,
+    ...(workspaceSnapshots === undefined ? {} : { workspaceSnapshots }),
+    ...(skillSyncIssues !== undefined && skillSyncIssues.length > 0 ? { skillSyncIssues } : {}),
+  };
+}
+
+function withProviderSkillSyncIssues(
+  provider: ServerProvider,
+  cwd: string,
+  skillSync: Pick<ProjectSkillSyncReport, "target" | "conflicts">,
+): ServerProvider {
+  const skillSyncIssues = [
+    ...(provider.skillSyncIssues ?? []).filter((issue) => issue.cwd !== cwd),
+    ...(skillSync.conflicts.length > 0 && skillSync.target !== undefined
+      ? [{ cwd, target: skillSync.target, conflicts: [...skillSync.conflicts] }]
+      : []),
+  ].slice(-MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER);
+  const { skillSyncIssues: _previousSkillSyncIssues, ...providerBase } = provider;
+  return {
+    ...providerBase,
+    ...(skillSyncIssues.length > 0 ? { skillSyncIssues } : {}),
+  };
 }
 
 export function upsertProviderWorkspaceSnapshot(
   provider: ServerProvider,
   cwd: string,
   scopedSnapshot: ProviderWorkspaceSnapshot,
+  skillSync?: Pick<ProjectSkillSyncReport, "target" | "conflicts"> | undefined,
 ): ServerProvider {
   const previousSnapshot = provider.workspaceSnapshots?.find((snapshot) => snapshot.cwd === cwd);
   const optionDescriptors = scopedSnapshot.optionDescriptors ?? previousSnapshot?.optionDescriptors;
@@ -184,12 +219,18 @@ export function upsertProviderWorkspaceSnapshot(
     ...(models === undefined ? {} : { models }),
     ...(scopedSnapshot.workspaceModelsPending ? { modelsPending: true } : {}),
   } satisfies NonNullable<ServerProvider["workspaceSnapshots"]>[number];
+  const providerWithSkillSync =
+    skillSync === undefined ? provider : withProviderSkillSyncIssues(provider, cwd, skillSync);
+  const { skillSyncIssues: _previousSkillSyncIssues, ...providerBase } = providerWithSkillSync;
   return {
-    ...provider,
+    ...providerBase,
     workspaceSnapshots: [
       ...(provider.workspaceSnapshots ?? []).filter((snapshot) => snapshot.cwd !== cwd),
       workspaceSnapshot,
     ].slice(-MAX_WORKSPACE_SNAPSHOTS_PER_PROVIDER),
+    ...(providerWithSkillSync.skillSyncIssues !== undefined
+      ? { skillSyncIssues: providerWithSkillSync.skillSyncIssues }
+      : {}),
   };
 }
 
@@ -338,6 +379,9 @@ export const mergeProviderSnapshot = (
       : previousWorkspaceSnapshots !== undefined
         ? { workspaceSnapshots: previousWorkspaceSnapshots }
         : {}),
+    ...(nextProvider.skillSyncIssues === undefined && previousProvider.skillSyncIssues !== undefined
+      ? { skillSyncIssues: previousProvider.skillSyncIssues }
+      : {}),
     ...(nextProvider.workspaceRescannedAt === undefined &&
     previousProvider.workspaceRescannedAt !== undefined
       ? { workspaceRescannedAt: previousProvider.workspaceRescannedAt }
@@ -521,6 +565,7 @@ export const layer = Layer.effect(
       const {
         workspaceSnapshots: _workspaceSnapshots,
         workspaceRescannedAt: _workspaceRescannedAt,
+        skillSyncIssues: _skillSyncIssues,
         ...machineProvider
       } = provider;
       yield* writeProviderStatusCache({ filePath, provider: machineProvider }).pipe(
@@ -1081,6 +1126,22 @@ export const layer = Layer.effect(
         Effect.map(([, nextProviders]) => nextProviders),
       );
 
+    const recordProjectSkillSync = Effect.fn("ProviderRegistry.recordProjectSkillSync")(
+      function* (input: {
+        readonly instanceId: ProviderInstanceId;
+        readonly cwd: string;
+        readonly report: Pick<ProjectSkillSyncReport, "target" | "conflicts">;
+      }) {
+        yield* updateProviders((providers) =>
+          providers.map((provider) =>
+            provider.instanceId === input.instanceId
+              ? withProviderSkillSyncIssues(provider, input.cwd, input.report)
+              : provider,
+          ),
+        );
+      },
+    );
+
     const refreshWorkspaceSnapshot = Effect.fn("refreshWorkspaceSnapshot")(function* (input: {
       readonly instanceId: ProviderInstanceId;
       readonly cwd: string;
@@ -1153,13 +1214,46 @@ export const layer = Layer.effect(
         : Effect.succeed(scannedFrom);
       const runScan = refreshMachineSnapshot.pipe(
         Effect.flatMap((scanBase) =>
-          Effect.map(snapshotForCwd(input.scanCwd ?? input.cwd), (scopedSnapshot) => ({
-            scanBase,
-            scopedSnapshot,
-          })),
+          Effect.map(
+            Effect.gen(function* () {
+              // Materialize the shared catalog before the scan so the provider's own loader sees it.
+              const skillSync = yield* syncProjectSkills({
+                cwd: input.cwd,
+                driver: instance.driverKind,
+                environment: process.env,
+              }).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, path),
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Project skill sync failed.", {
+                    cwd: input.cwd,
+                    driver: instance.driverKind,
+                    cause,
+                  }).pipe(Effect.as(undefined)),
+                ),
+              );
+              const [scopedSnapshot, projectSkills] = yield* Effect.all([
+                snapshotForCwd(input.scanCwd ?? input.cwd),
+                discoverProjectSkills(input.cwd).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  Effect.provideService(Path.Path, path),
+                ),
+              ]);
+              return { scopedSnapshot, projectSkills, skillSync };
+            }),
+            ({ scopedSnapshot, projectSkills, skillSync }) => ({
+              scanBase,
+              // Every provider reports the project's shared skills, so one thread works with any agent.
+              scopedSnapshot: {
+                ...scopedSnapshot,
+                skills: mergeSkillCatalog(scopedSnapshot.skills, projectSkills),
+              },
+              skillSync,
+            }),
+          ),
         ),
         // Scans fail on error; returned inventory remains valid even when provider health reports an error.
-        Effect.flatMap(({ scanBase, scopedSnapshot }) =>
+        Effect.flatMap(({ scanBase, scopedSnapshot, skillSync }) =>
           instanceRegistry.getInstance(input.instanceId).pipe(
             Effect.flatMap((currentInstance) => {
               if (currentInstance !== instance) return Ref.get(providersRef);
@@ -1175,13 +1269,18 @@ export const layer = Layer.effect(
                   ) {
                     return candidate;
                   }
-                  const scanned = upsertProviderWorkspaceSnapshot(candidate, input.cwd, {
-                    ...scopedSnapshot,
-                    checkedAt: scannedAt,
-                    // Without driver command discovery, retain previous commands after failed health checks and retry.
-                    slashCommandsPending:
-                      scopedSnapshot.slashCommandsPending ?? scopedSnapshot.status === "error",
-                  });
+                  const scanned = upsertProviderWorkspaceSnapshot(
+                    candidate,
+                    input.cwd,
+                    {
+                      ...scopedSnapshot,
+                      checkedAt: scannedAt,
+                      // Without driver command discovery, retain previous commands after failed health checks and retry.
+                      slashCommandsPending:
+                        scopedSnapshot.slashCommandsPending ?? scopedSnapshot.status === "error",
+                    },
+                    skillSync,
+                  );
                   // Clients keep fetched snapshots, so a changed rescan must tell them to fetch again.
                   const rescanned = workspaceSnapshotOf(scanned);
                   const held = heldBeforeWait ?? scanBase;
@@ -1282,6 +1381,7 @@ export const layer = Layer.effect(
 
     return {
       getProviders: Ref.get(providersRef),
+      recordProjectSkillSync,
       refresh: (provider?: ProviderDriverKind) =>
         refresh(provider).pipe(Effect.catchCause(recoverRefreshFailure)),
       refreshInstance: (instanceId: ProviderInstanceId) =>

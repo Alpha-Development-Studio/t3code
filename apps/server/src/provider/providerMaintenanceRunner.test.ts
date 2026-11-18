@@ -204,6 +204,7 @@ function makeRegistry(
 
     const registry: ProviderRegistry.ProviderRegistry["Service"] = {
       getProviders: Ref.get(providersRef),
+      recordProjectSkillSync: () => Effect.void,
       refresh: () => Ref.get(providersRef),
       refreshInstance: () => Ref.get(providersRef),
       reloadSecretsAndRefresh: () => Ref.get(providersRef),

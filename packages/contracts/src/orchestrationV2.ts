@@ -397,6 +397,16 @@ export const OrchestrationV2IdentityCapabilities = Schema.Struct({
 });
 export type OrchestrationV2IdentityCapabilities = typeof OrchestrationV2IdentityCapabilities.Type;
 
+export const OrchestrationV2SkillCapabilities = Schema.Struct({
+  /**
+   * The provider's own harness discovers project `.agents/skills` itself. Only an explicit
+   * `false` opts into T3 expanding mentions; absent is treated as native so a provider that
+   * handles the folder is never pre-empted.
+   */
+  loadsProjectSkills: Schema.Boolean,
+});
+export type OrchestrationV2SkillCapabilities = typeof OrchestrationV2SkillCapabilities.Type;
+
 export const OrchestrationV2ProviderCapabilities = Schema.Struct({
   sessions: OrchestrationV2SessionCapabilities,
   threads: OrchestrationV2ThreadCapabilities,
@@ -407,6 +417,8 @@ export const OrchestrationV2ProviderCapabilities = Schema.Struct({
   planning: OrchestrationV2PlanningCapabilities,
   subagents: OrchestrationV2SubagentCapabilities,
   context: OrchestrationV2ContextCapabilities,
+  // Absent is treated as native; only `loadsProjectSkills: false` opts into T3's expansion.
+  skills: Schema.optionalKey(OrchestrationV2SkillCapabilities),
   checkpointing: OrchestrationV2CheckpointCapabilities,
   identity: OrchestrationV2IdentityCapabilities,
   // Replay defaults old events to the weaker client-boundary guarantee.

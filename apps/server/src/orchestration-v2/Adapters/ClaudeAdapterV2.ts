@@ -511,6 +511,8 @@ function claudeDescendants(
 }
 
 export const ClaudeProviderCapabilitiesV2 = {
+  // Claude reads `.claude/skills`, not the shared `.agents/skills`, so T3 expands those mentions.
+  skills: { loadsProjectSkills: false },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,

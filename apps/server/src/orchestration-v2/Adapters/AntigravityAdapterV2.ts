@@ -55,6 +55,8 @@ const ANTIGRAVITY_PROVIDER = ProviderDriverKind.make("antigravity");
 
 const AntigravityProviderCapabilitiesV2 = {
   ...AcpProviderCapabilitiesV2,
+  // Antigravity discovers project `.agents/skills` itself, so its own expansion comes first.
+  skills: { loadsProjectSkills: true },
   sessions: {
     ...AcpProviderCapabilitiesV2.sessions,
     supportsModelSwitchInSession: true,

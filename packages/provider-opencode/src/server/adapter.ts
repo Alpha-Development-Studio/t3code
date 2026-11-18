@@ -112,6 +112,8 @@ const makeOpenCodeMessageId = Effect.fnUntraced(function* (
 
 // OpenCode has no turn object; correlate by initiating user message and settle on session idle.
 const OpenCodeProviderCapabilitiesV2 = {
+  // OpenCode discovers project `.agents/skills` itself, so its own expansion comes first.
+  skills: { loadsProjectSkills: true },
   sessions: {
     // The directory-bound client/server is not safe for cross-thread pooling.
     supportsMultipleProviderThreadsPerSession: false,

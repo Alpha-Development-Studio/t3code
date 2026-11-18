@@ -1230,6 +1230,67 @@ it.layer(
       );
     });
 
+    it("reports skill sync conflicts on provider status until a clean scan clears them", () => {
+      const provider = {
+        instanceId: ProviderInstanceId.make("codex"),
+        driver: ProviderDriverKind.make("codex"),
+        status: "ready",
+        enabled: true,
+        installed: true,
+        auth: { status: "authenticated" },
+        checkedAt: "2026-03-25T00:00:00.000Z",
+        version: "1.0.0",
+        models: [],
+        slashCommands: [],
+        skills: [],
+      } satisfies ServerProvider;
+      const scopedSnapshot = { ...provider } satisfies ProviderWorkspaceSnapshot;
+      const target = "/project/.claude/skills";
+
+      const conflict = ProviderRegistry.upsertProviderWorkspaceSnapshot(
+        provider,
+        "/project",
+        scopedSnapshot,
+        { target, conflicts: ["review"] },
+      );
+      assert.deepStrictEqual(conflict.skillSyncIssues, [
+        { cwd: "/project", target, conflicts: ["review"] },
+      ]);
+
+      const otherProject = ProviderRegistry.upsertProviderWorkspaceSnapshot(
+        conflict,
+        "/other",
+        scopedSnapshot,
+        { target: "/other/.opencode/skills", conflicts: ["deploy"] },
+      );
+      assert.deepStrictEqual(otherProject.skillSyncIssues, [
+        { cwd: "/project", target, conflicts: ["review"] },
+        { cwd: "/other", target: "/other/.opencode/skills", conflicts: ["deploy"] },
+      ]);
+
+      const cleared = ProviderRegistry.upsertProviderWorkspaceSnapshot(
+        otherProject,
+        "/project",
+        scopedSnapshot,
+        { target, conflicts: [] },
+      );
+      assert.deepStrictEqual(cleared.skillSyncIssues, [
+        { cwd: "/other", target: "/other/.opencode/skills", conflicts: ["deploy"] },
+      ]);
+
+      const clean = ProviderRegistry.upsertProviderWorkspaceSnapshot(
+        conflict,
+        "/project",
+        scopedSnapshot,
+        { target, conflicts: [] },
+      );
+      assert.equal(clean.skillSyncIssues, undefined);
+
+      // A machine health refresh must not erase workspace-derived conflicts.
+      const refreshed = ProviderRegistry.mergeProviderSnapshot(cleared, provider);
+      assert.deepStrictEqual(refreshed.skillSyncIssues, cleared.skillSyncIssues);
+    });
+
     it("preserves previously discovered provider models when a refresh returns none", () => {
       const previousProvider = {
         instanceId: ProviderInstanceId.make("cursor"),

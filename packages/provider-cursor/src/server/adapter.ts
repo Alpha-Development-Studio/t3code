@@ -80,6 +80,8 @@ const CURSOR_DRIVER_KIND = CursorAgentSdk.CURSOR_PROVIDER;
 export const CURSOR_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CURSOR_DRIVER_KIND);
 
 export const CursorProviderCapabilitiesV2 = {
+  // Cursor discovers project `.agents/skills` itself, so its own expansion comes first.
+  skills: { loadsProjectSkills: true },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,

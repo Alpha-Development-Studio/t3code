@@ -104,6 +104,8 @@ const SETTLE_PROBE_RETRY_DELAY = Duration.millis(100);
 
 const PiProviderCapabilitiesV2 = {
   runtimePolicy: { enforcement: "client-boundary" },
+  // Pi discovers project `.agents/skills` itself, so its own expansion comes first.
+  skills: { loadsProjectSkills: true },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,

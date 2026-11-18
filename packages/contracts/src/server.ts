@@ -127,6 +127,14 @@ export const ServerProviderSkill = Schema.Struct({
 });
 export type ServerProviderSkill = typeof ServerProviderSkill.Type;
 
+/** A provider-owned skill copy preserved because it conflicts with the shared catalog. */
+export const ServerProviderSkillSyncIssue = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  target: TrimmedNonEmptyString,
+  conflicts: Schema.Array(TrimmedNonEmptyString),
+});
+export type ServerProviderSkillSyncIssue = typeof ServerProviderSkillSyncIssue.Type;
+
 export const ServerProviderWorkspaceSnapshot = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   checkedAt: IsoDateTime,
@@ -275,6 +283,8 @@ export const ServerProvider = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  /** Copies preserved by the last materialization sync because they conflict, grouped by workspace. */
+  skillSyncIssues: Schema.optionalKey(Schema.Array(ServerProviderSkillSyncIssue)),
   workspaceSnapshots: Schema.optionalKey(Schema.Array(ServerProviderWorkspaceSnapshot)),
   /**
    * Set when the server rescanned a workspace after a session start and its skills or commands

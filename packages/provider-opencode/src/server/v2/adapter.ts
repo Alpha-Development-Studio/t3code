@@ -126,6 +126,8 @@ const NativeTodoList = Schema.Struct({
 const isNativeTodoList = Schema.is(NativeTodoList);
 
 const OpenCode2ProviderCapabilities = {
+  // OpenCode discovers project `.agents/skills` itself, so its own expansion comes first.
+  skills: { loadsProjectSkills: true },
   sessions: {
     supportsMultipleProviderThreadsPerSession: true,
     supportsModelSwitchInSession: true,

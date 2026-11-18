@@ -38,6 +38,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
+import { PROJECT_SKILL_SYNC_ENV, type ProjectSkillSyncReport } from "../skills/ProjectSkillSync.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -55,6 +56,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { withInlineContext } from "./ContextHandoffDelivery.ts";
@@ -456,6 +458,8 @@ function makeLocalCommandHarness(input: {
   readonly workspaceRoot?: string;
   readonly gitWorkflow?: GitWorkflow.GitWorkflowService["Service"];
   readonly fileSystem?: FileSystem.FileSystem;
+  readonly loadsProjectSkills?: boolean;
+  readonly providerDriver?: ProviderDriverKind;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly logoutFailure?: string;
@@ -528,9 +532,11 @@ function makeLocalCommandHarness(input: {
   };
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
-    driver: ProviderDriverKind.make(
-      input.nativeGoals === undefined ? "codex" : (input.goalDriver ?? "opencode"),
-    ),
+    driver:
+      input.providerDriver ??
+      ProviderDriverKind.make(
+        input.nativeGoals === undefined ? "codex" : (input.goalDriver ?? "opencode"),
+      ),
     providerInstanceId: newInstanceId,
     providerSessionId: input.missingProviderSession === true ? null : providerSessionId,
     appThreadId: threadId,
@@ -1093,6 +1099,7 @@ function makeLocalCommandHarness(input: {
     model: null,
     capabilities: {
       ...CodexProviderCapabilitiesV2,
+      skills: { loadsProjectSkills: input.loadsProjectSkills === true },
       threads: {
         ...CodexProviderCapabilitiesV2.threads,
         canForkWhileSourceRunning: input.canForkWhileSourceRunning,
@@ -1144,6 +1151,13 @@ function makeLocalCommandHarness(input: {
       : (input: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
           startTurn(ProviderAdapter.resumeTurnInput(input)),
   };
+  const recordProjectSkillSync = vi.fn(
+    (_input: {
+      readonly instanceId: ProviderInstanceId;
+      readonly cwd: string;
+      readonly report: Pick<ProjectSkillSyncReport, "target" | "conflicts">;
+    }) => Effect.void,
+  );
   const open = vi.fn(() =>
     input.sideChat !== undefined
       ? Effect.succeed(sideChatSession as never)
@@ -1287,9 +1301,13 @@ function makeLocalCommandHarness(input: {
       projection.runs.find((candidate) => candidate.id === id),
     ),
   );
+  const providerRegistryLayer = Layer.mock(ProviderRegistry.ProviderRegistry)({
+    recordProjectSkillSync,
+  });
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        providerRegistryLayer,
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: (handoff) =>
             input.sideChat?.nativeForkFrom === undefined
@@ -1377,9 +1395,11 @@ function makeLocalCommandHarness(input: {
         }),
       ),
     ),
+    Layer.provideMerge(providerRegistryLayer),
   );
   return {
     layer,
+    recordProjectSkillSync,
     interruptRun,
     settledRuns,
     getThreadRecords,
@@ -2156,6 +2176,192 @@ effectIt.effect(
       expect(harness.projection().runs.at(-1)?.status).toBe("running");
       expect(harness.startRootRun).toHaveBeenCalledOnce();
     }),
+);
+
+effectIt.effect("expands a project skill mention for a provider without native skill support", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-skill-turn-" });
+      const skillDirectory = path.join(root, ".agents", "skills", "review");
+      yield* fileSystem.makeDirectory(skillDirectory, { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(skillDirectory, "SKILL.md"),
+        "---\nname: review\ndescription: Shared review\n---\n\nCheck the diff twice.\n",
+      );
+      const harness = makeLocalCommandHarness({
+        text: "Please $review this.\n\n```\n$review\n```\n",
+        worktreePath: root,
+        fileSystem,
+        manualContinuation: true,
+        steeringRestart: true,
+        nativeResumeUnsupported: true,
+        sideChat: { contextRun: "delivered" },
+      });
+      yield* harness.start;
+      const text = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
+      expect(text).toContain("Check the diff twice.");
+      expect(text).not.toContain("Please $review");
+      expect(text).toContain("```\n$review\n```");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  ),
+);
+
+effectIt.effect("materializes the shared catalog before the provider session opens", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-sync-before-open-" });
+      const shared = path.join(root, ".agents", "skills", "review");
+      yield* fileSystem.makeDirectory(shared, { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(shared, "SKILL.md"),
+        "---\nname: review\ndescription: Shared review\n---\n\nCheck the diff twice.\n",
+      );
+      vi.stubEnv(PROJECT_SKILL_SYNC_ENV, "1");
+      yield* Effect.addFinalizer(() => Effect.sync(() => vi.unstubAllEnvs()));
+      const harness = makeLocalCommandHarness({
+        text: "Please $review this.",
+        worktreePath: root,
+        fileSystem,
+        providerDriver: ProviderDriverKind.make("claudeAgent"),
+        loadsProjectSkills: false,
+        manualContinuation: true,
+        steeringRestart: true,
+        nativeResumeUnsupported: true,
+        sideChat: { contextRun: "delivered" },
+      });
+      const open = harness.open.getMockImplementation()!;
+      harness.open.mockImplementation(() =>
+        Effect.gen(function* () {
+          // The session opens only after the synced copy exists in Claude's own folder.
+          expect(
+            yield* fileSystem
+              .exists(path.join(root, ".claude", "skills", "review", "SKILL.md"))
+              .pipe(Effect.orElseSucceed(() => false)),
+          ).toBe(true);
+          return yield* open();
+        }),
+      );
+      yield* harness.start;
+      const text = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
+      expect(text).toBe("Please $review this.");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  ),
+);
+
+effectIt.effect("reports a conflict found while opening a session to provider status", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-sync-conflict-turn-" });
+      const shared = path.join(root, ".agents", "skills", "review");
+      yield* fileSystem.makeDirectory(shared, { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(shared, "SKILL.md"),
+        "---\nname: review\ndescription: Shared review\n---\n\nCheck the diff twice.\n",
+      );
+      const providerSkills = path.join(root, ".claude", "skills");
+      const providerCopy = path.join(providerSkills, "review");
+      yield* fileSystem.makeDirectory(providerCopy, { recursive: true });
+      yield* fileSystem.writeFileString(path.join(providerCopy, "SKILL.md"), "Locally edited.\n");
+      vi.stubEnv(PROJECT_SKILL_SYNC_ENV, "1");
+      yield* Effect.addFinalizer(() => Effect.sync(() => vi.unstubAllEnvs()));
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        worktreePath: root,
+        fileSystem,
+        providerDriver: ProviderDriverKind.make("claudeAgent"),
+        loadsProjectSkills: false,
+        manualContinuation: true,
+        steeringRestart: true,
+        nativeResumeUnsupported: true,
+        sideChat: { contextRun: "delivered" },
+      });
+
+      yield* harness.start;
+
+      const recorded = harness.recordProjectSkillSync.mock.calls[0]?.[0];
+      expect(recorded?.cwd).toBe(root);
+      expect(recorded?.report.conflicts).toEqual(["review"]);
+      expect(recorded?.report.target?.replaceAll("\\", "/")).toBe(
+        providerSkills.replaceAll("\\", "/"),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  ),
+);
+
+effectIt.effect("defers a materialized skill to the provider's native invocation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-materialized-skill-" });
+      const shared = path.join(root, ".agents", "skills", "review");
+      const providerCopy = path.join(root, ".claude", "skills", "review");
+      yield* fileSystem.makeDirectory(shared, { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(shared, "SKILL.md"),
+        "---\nname: review\ndescription: Shared review\n---\n\nCheck the diff twice.\n",
+      );
+      // What the opt-in sync leaves behind before the provider opens its session.
+      yield* fileSystem.makeDirectory(providerCopy, { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(providerCopy, "SKILL.md"),
+        "---\nname: review\ndescription: Shared review\n---\n\nCheck the diff twice.\n",
+      );
+      const harness = makeLocalCommandHarness({
+        text: "Please $review this.",
+        worktreePath: root,
+        fileSystem,
+        providerDriver: ProviderDriverKind.make("claudeAgent"),
+        loadsProjectSkills: false,
+        manualContinuation: true,
+        steeringRestart: true,
+        nativeResumeUnsupported: true,
+        sideChat: { contextRun: "delivered" },
+      });
+      yield* harness.start;
+      const text = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
+      // The provider's own dispatch turns this mention into its `/review` invocation.
+      expect(text).toBe("Please $review this.");
+      expect(text).not.toContain("Check the diff twice.");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  ),
+);
+
+effectIt.effect("leaves a native provider's own skill expansion untouched", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-native-skill-turn-" });
+      const skillDirectory = path.join(root, ".agents", "skills", "review");
+      yield* fileSystem.makeDirectory(skillDirectory, { recursive: true });
+      yield* fileSystem.writeFileString(
+        path.join(skillDirectory, "SKILL.md"),
+        "---\nname: review\ndescription: Shared review\n---\n\nCheck the diff twice.\n",
+      );
+      const harness = makeLocalCommandHarness({
+        text: "Please $review this.",
+        worktreePath: root,
+        fileSystem,
+        nativeGoals: true,
+        goalDriver: "opencode",
+        loadsProjectSkills: true,
+        manualContinuation: true,
+        steeringRestart: true,
+        nativeResumeUnsupported: true,
+        sideChat: { contextRun: "delivered" },
+      });
+      yield* harness.start;
+      const text = harness.startTurn.mock.calls[0]?.[0].message.text ?? "";
+      expect(text).toBe("Please $review this.");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  ),
 );
 
 effectIt.effect("sends new steering text when restarting a manual continuation", () =>
